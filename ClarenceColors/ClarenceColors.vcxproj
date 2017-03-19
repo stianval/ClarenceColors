@@ -146,6 +146,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="clarencecolors.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="clarencecolors.csv" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="clarencelog.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
