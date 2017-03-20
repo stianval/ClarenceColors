@@ -221,40 +221,59 @@ void outputLeastDistances(ostream &stream, const vector<ColorDist> &sortedDistan
 	stream << flush;
 }
 
+void extractColorComponents(int color, int &red, int &green, int &blue) {
+	red = color >> 16;
+	green = color >> 8 & 0xFF;
+	blue = color & 0xFF;
+}
+
 struct Cluster {
-	vector<size_t> colorIndeces;
+	vector<size_t> colorIndices;
+	vector<size_t> halfbriteIndices;
 	double redMean = 0.0;
 	double greenMean = 0.0;
 	double blueMean = 0.0;
-	bool halfbrite = false;
-	bool allHalfbrite = true;
+
 	void insertColor(int color, size_t index) {
-		size_t n = colorIndeces.size();
-		int red = color >> 16;
-		int green = color >> 8 & 0xFF;
-		int blue = color & 0xFF;
+		size_t n = colorIndices.size();
+		int red, green, blue;
+		extractColorComponents(color, red, green, blue);
 
 		redMean = (redMean * n + red) / (n + 1);
 		greenMean = (greenMean * n + green) / (n + 1);
 		blueMean = (blueMean*n + blue) / (n + 1);
-		colorIndeces.push_back(index);
+		colorIndices.push_back(index);
+	}
 
-		if (isHalfbrite(index)) {
-			halfbrite = true;
-		}
-		else {
-			allHalfbrite = false;
-		}
+	void insertHalfbrite(int color, size_t index) {
+		size_t n = colorIndices.size();
+		int red, green, blue;
+		extractColorComponents(color, red, green, blue);
+
+		redMean = (redMean * n + 2*red) / (n + 1);
+		greenMean = (greenMean * n + 2*green) / (n + 1);
+		blueMean = (blueMean*n + 2*blue) / (n + 1);
+		halfbriteIndices.push_back(index);
 	}
 
 	double distance(int color) {
-		int red = color >> 16;
-		int green = color >> 8 & 0xFF;
-		int blue = color & 0xFF;
+		int red, green, blue;
+		extractColorComponents(color, red, green, blue);
 
 		double dRed = red - redMean;
 		double dGreen = green - greenMean;
 		double dBlue = blue - blueMean;
+
+		return dRed*dRed + dGreen*dGreen + dBlue*dBlue;
+	}
+
+	double halfbriteDistance(int color) {
+		int red, green, blue;
+		extractColorComponents(color, red, green, blue);
+
+		double dRed = red - redMean / 2.0;
+		double dGreen = green - greenMean / 2.0;
+		double dBlue = blue - blueMean / 2.0;
 
 		return dRed*dRed + dGreen*dGreen + dBlue*dBlue;
 	}
@@ -266,6 +285,11 @@ void epsilonClusters(vector<Cluster> &result, const vector<int> &allColors, doub
 		for (Cluster &cluster : result) {
 			if (cluster.distance(allColors[index]) <= epsilon) {
 				cluster.insertColor(allColors[index], index);
+				foundCluster = true;
+				break;
+			}
+			if (cluster.halfbriteDistance(allColors[index]) <= epsilon) {
+				cluster.insertHalfbrite(allColors[index], index);
 				foundCluster = true;
 				break;
 			}
@@ -282,13 +306,13 @@ void outputClusters(ostream &stream, const vector <Cluster> &clusters, const vec
 	int counter = 0;
 	stream << "Colors\n";
 	for (const Cluster &cluster : clusters) {
-		if (!cluster.halfbrite) {
+		if (cluster.halfbriteIndices.empty()) {
 			stream << counter++ << " - " << cluster.redMean << ", " << cluster.greenMean << ", " << cluster.blueMean << '\n';
 		}
 	}
 	stream << "Halfbrites\n";
 	for (const Cluster &cluster : clusters) {
-		if (cluster.halfbrite && !cluster.allHalfbrite) {
+		if (!cluster.halfbriteIndices.empty()) {
 			stream << counter++ << " - " << cluster.redMean << ", " << cluster.greenMean << ", " << cluster.blueMean << '\n';
 		}
 	}
@@ -297,7 +321,7 @@ void outputClusters(ostream &stream, const vector <Cluster> &clusters, const vec
 
 void stiansShittyAlgorithm(ostream &logfile, const vector<int> &allColors) {
 	vector<Cluster> clusters;
-	epsilonClusters(clusters, allColors, 900.0);
+	epsilonClusters(clusters, allColors, 1000.0);
 	outputClusters(logfile, clusters, allColors);
 }
 
@@ -334,8 +358,8 @@ void crudeTestAlgorithm(ostream &logfile, vector<int> &colors) {
 	logfile << '\n';
 	outputLeastDistances(logfile, sortedDistances);
 
-
-	stiansShittyAlgorithm(logfile, allColors);
+	sort(colors.rbegin(), colors.rend());
+	stiansShittyAlgorithm(logfile, colors);
 }
 
 int main() {
