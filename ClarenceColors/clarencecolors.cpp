@@ -4,7 +4,11 @@
 #include <fstream>
 #include <vector>
 #include <algorithm>
+#include <numeric>
 #include <iomanip>
+#include <set>
+#include <iterator>
+#include <png.h>
 using namespace std;
 
 struct Bob {
@@ -19,6 +23,7 @@ struct Site {
 	int index;
 	vector<int> colors;
 	vector<Bob*> bobs;
+	vector<size_t> bobEndIndex;
 
 	Bob *currentBob(void) { return bobs.back(); }
 };
@@ -65,9 +70,10 @@ void readfile(istream &file, vector<Site> &sites, vector<Bob> &bobs) {
 
 			// Make a default "background bob" for the site
 			Bob bob;
-			bob.name = cell + " - bg";
+			bob.name = cell + "[bg]";
 			bobs.push_back(bob);
 			sites.back().bobs.push_back(&bobs.back());
+			sites.back().bobEndIndex.push_back(0);
 		}
 	}
 	
@@ -87,10 +93,15 @@ void readfile(istream &file, vector<Site> &sites, vector<Bob> &bobs) {
 				int color = hex2dec(cell);
 				siteIt->colors.push_back(color);
 				siteIt->currentBob()->colors.push_back(color);
+				siteIt->bobEndIndex.back()++;
 			}
 			// otherwise the cell contains the name of a bob
 			else {
-
+				Bob bob;
+				bob.name = cell;
+				bobs.push_back(bob);
+				siteIt->bobs.push_back(&bobs.back());
+				siteIt->bobEndIndex.push_back(siteIt->colors.size());
 			}
 		}
 	}
@@ -160,9 +171,9 @@ void outputDistances(ostream &stream, const vector<int> &allColors, const vector
 		stream << setw(6) << hex << color << " ";
 	}
 	stream << '\n';
-	for (int row = 0; row < distances.size(); ++row) {
+	for (size_t row = 0; row < distances.size(); ++row) {
 		stream << setw(6) << hex << allColors[row] << " ";
-		for (int col = 0; col <= row; ++col) {
+		for (size_t col = 0; col <= row; ++col) {
 			stream << setw(6) << "" << " ";
 		}
 		for (int dist : distances[row]) {
@@ -302,30 +313,195 @@ void epsilonClusters(vector<Cluster> &result, const vector<int> &allColors, doub
 	}
 }
 
-void outputClusters(ostream &stream, const vector <Cluster> &clusters, const vector<int> &allColors) {
+void outputBobNames(ostream &stream, const vector<size_t> colorIndices, const vector<size_t> indexMap, const Site &site) {
+	set<string> bobNames;
+	transform(colorIndices.begin(), colorIndices.end(), inserter(bobNames, bobNames.begin()), [&indexMap, &site](size_t index) {
+		size_t mappedIndex = indexMap[index];
+		size_t bobNo = 0;
+		for (; mappedIndex >= site.bobEndIndex[bobNo]; ++bobNo) { ; }
+		string name = site.bobs[bobNo]->name;
+		return name;
+	});
+	for (const string &name : bobNames) {
+		stream << name << ' ';
+	}
+}
+
+void outputClusters(ostream &stream, const vector<Cluster> &clusters, const vector<size_t> &indexMap, const Site &site) {
 	int counter = 0;
 	stream << "Colors\n";
 	for (const Cluster &cluster : clusters) {
-		if (cluster.halfbriteIndices.empty()) {
-			stream << counter++ << " - " << cluster.redMean << ", " << cluster.greenMean << ", " << cluster.blueMean << '\n';
-		}
+		stream << counter++ << " - " << cluster.redMean << ", " << cluster.greenMean << ", " << cluster.blueMean << "   -   ";
+		outputBobNames(stream, cluster.colorIndices, indexMap, site);
+		stream << '\n';
 	}
 	stream << "Halfbrites\n";
 	for (const Cluster &cluster : clusters) {
 		if (!cluster.halfbriteIndices.empty()) {
-			stream << counter++ << " - " << cluster.redMean << ", " << cluster.greenMean << ", " << cluster.blueMean << '\n';
+			stream << counter++ << " - " << cluster.redMean/2 << ", " << cluster.greenMean/2 << ", " << cluster.blueMean/2 << "   -   ";
+			outputBobNames(stream, cluster.halfbriteIndices, indexMap, site);
+			stream << '\n';
+		}
+		else {
+			counter++;
 		}
 	}
 	stream << flush;
 }
 
-void stiansShittyAlgorithm(ostream &logfile, const vector<int> &allColors) {
-	vector<Cluster> clusters;
-	epsilonClusters(clusters, allColors, 1000.0);
-	outputClusters(logfile, clusters, allColors);
+void extractColor(png_color &color, const Cluster &cluster, double multiplier=1.0) {
+	color.red = min(255, static_cast<int>(cluster.redMean * multiplier));
+	color.green = min(255, static_cast<int>(cluster.greenMean * multiplier));
+	color.blue = min(255, static_cast<int>(cluster.blueMean * multiplier));
 }
 
-void crudeTestAlgorithm(ostream &logfile, vector<int> &colors) {
+void extractPalette(png_colorp palette, const vector<Cluster> &clusters) {
+	int counter = 0;
+	for (const Cluster &cluster : clusters) {
+		png_color &color = palette[counter++];
+		extractColor(color, cluster);
+	}
+	for (const Cluster &cluster : clusters) {
+		if (!cluster.halfbriteIndices.empty()) {
+			png_color &color = palette[counter++];
+			extractColor(color, cluster, 0.5);
+		}
+		else {
+			counter++;
+		}
+	}
+}
+
+template<int cellW, int cellH, int nCellsW, int nCellsH>
+struct DrawingContext {
+	png_color rows[nCellsH][cellW*nCellsW] = { 0 };
+	png_bytep pngRows[cellH*nCellsH];
+	int cursX = 0, cursY = 0;
+	int width = cellW*nCellsW;
+	int height = cellH*nCellsH;
+	DrawingContext() {
+		for (size_t i=0; i < cellH * nCellsH; ++i) {
+			pngRows[i] = (png_bytep)&(rows[i/cellH][0]);
+		}
+	}
+
+	void tab() {
+		cursX = nCellsW / 2;
+	}
+
+	void nextLine() {
+		cursX = 0;
+		cursY++;
+	}
+
+	void putColor(double red, double green, double blue) {
+		png_color color;
+		color.red = min(255, static_cast<int>(red));
+		color.green = min(255, static_cast<int>(green));
+		color.blue = min(255, static_cast<int>(blue));
+		int columnStart = cursX*cellW;
+		for (int columnOffset = 0; columnOffset < cellW; ++columnOffset) {
+			rows[cursY][columnStart + columnOffset] = color;
+		}
+		cursX++;
+	}
+
+	void putColor(int color) {
+		int red, green, blue;
+		extractColorComponents(color, red, green, blue);
+		putColor(red, green, blue);
+	}
+};
+
+template <typename DrawingContext>
+void drawClusterAverage(DrawingContext &canvas, const vector<Cluster> &clusters, const vector<int> colors) {
+	for (const Cluster &cluster : clusters) {
+		canvas.putColor(cluster.redMean, cluster.greenMean, cluster.blueMean);
+		for (size_t index : cluster.colorIndices) {
+			canvas.putColor(colors[index]);
+		}
+		canvas.tab();
+		canvas.putColor(cluster.redMean / 2, cluster.greenMean / 2, cluster.blueMean / 2);
+		for (size_t index : cluster.halfbriteIndices) {
+			canvas.putColor(colors[index]);
+		}
+		canvas.nextLine();
+	}
+}
+
+int pngClusterAverage(FILE *fp, const vector<Cluster> &clusters, const vector<int> colors) {
+	png_structp writer = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	if (!writer) {
+		return errno;
+	}
+	png_infop info = png_create_info_struct(writer);
+	if (!info) {
+		png_destroy_write_struct(&writer, NULL);
+		return errno;
+	}
+
+	if (setjmp(png_jmpbuf(writer))) {
+		png_destroy_write_struct(&writer, &info);
+		return errno;
+	}
+
+	png_init_io(writer, fp);
+
+	DrawingContext<16, 16, 32, 32> canvas;
+	drawClusterAverage(canvas, clusters, colors);
+
+	png_set_IHDR(writer, info, canvas.width, canvas.height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+	png_set_rows(writer, info, canvas.pngRows);
+
+	png_write_png(writer, info, PNG_TRANSFORM_IDENTITY, NULL);
+
+	return 0;
+}
+
+int pngClusters(FILE *fp, const vector<Cluster> &clusters) {
+	png_structp writer = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	if (!writer) {
+		return errno;
+	}
+	png_infop info = png_create_info_struct(writer);
+	if (!info) {
+		png_destroy_write_struct(&writer, NULL);
+		return errno;
+	}
+
+	if (setjmp(png_jmpbuf(writer))) {
+		png_destroy_write_struct(&writer, &info);
+		return errno;
+	}
+
+	png_init_io(writer, fp);
+
+	png_byte row[16] = { 0 };
+	png_bytep rows[16];
+	for (png_bytep &initRow : rows) {
+		initRow = row;
+	}
+
+	png_color palette[64] = { 0 };
+	extractPalette(palette, clusters);
+
+	png_set_IHDR(writer, info, 16, 16, 8, PNG_COLOR_TYPE_PALETTE, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+	png_set_PLTE(writer, info, palette, 64);
+	png_set_rows(writer, info, rows);
+
+	png_write_png(writer, info, PNG_TRANSFORM_IDENTITY, NULL);
+
+	return 0;
+}
+
+void stiansShittyAlgorithm(vector<Cluster> &clusters, const vector<int> &allColors) {
+	epsilonClusters(clusters, allColors, 1000.0);
+}
+
+void crudeTestAlgorithm(ostream &logfile, const Site &site) {
+	const vector<int> &colors = site.colors;
+
+	/*
 	vector<int> allColors;
 	for (int &color : colors) {
 		allColors.push_back(color);
@@ -334,7 +510,7 @@ void crudeTestAlgorithm(ostream &logfile, vector<int> &colors) {
 	vector<vector<int> > distances(allColors.size());
 	vector<ColorDist> sortedDistances;
 	for (size_t row = 0; row < allColors.size(); ++row) {
-		for (size_t col = row+1; col < allColors.size(); ++col) {
+		for (size_t col = row + 1; col < allColors.size(); ++col) {
 			int dist = squaredEuclideanDistance(allColors[row], allColors[col]);
 			distances[row].push_back(dist);
 
@@ -358,8 +534,47 @@ void crudeTestAlgorithm(ostream &logfile, vector<int> &colors) {
 	logfile << '\n';
 	outputLeastDistances(logfile, sortedDistances);
 
-	sort(colors.rbegin(), colors.rend());
-	stiansShittyAlgorithm(logfile, colors);
+	*/
+
+	vector<size_t> indexMap(colors.size());
+	iota(indexMap.begin(), indexMap.end(), 0);
+
+	sort(indexMap.rbegin(), indexMap.rend(), [&colors](size_t lhs, size_t rhs) {
+		return colors[lhs] < colors[rhs];
+	});
+
+	vector<int> colorsSorted(colors.size());
+	for (size_t i = 0; i < colorsSorted.size(); ++i) {
+		colorsSorted[i] = colors[indexMap[i]];
+	}
+
+	vector<Cluster> clusters;
+
+	stiansShittyAlgorithm(clusters, colorsSorted);
+	outputClusters(logfile, clusters, indexMap, site);
+
+	string pngfilename = site.name + ".png";
+	FILE *fp;
+	fopen_s(&fp, pngfilename.c_str(), "wb");
+	errno = 0;
+	int error = pngClusters(fp, clusters);
+	fclose(fp);
+	if (error) {
+		char buf[1024];
+		strerror_s(buf, error);
+		perror(buf);
+	}
+
+	pngfilename = site.name + "Average.png";
+	fopen_s(&fp, pngfilename.c_str(), "wb");
+	errno = 0;
+	error = pngClusterAverage(fp, clusters, colorsSorted);
+	fclose(fp);
+	if (error) {
+		char buf[1024];
+		strerror_s(buf, error);
+		perror(buf);
+	}
 }
 
 int main() {
@@ -370,5 +585,5 @@ int main() {
 	bobs.reserve(200); // to avoid reallocation, since we will make pointers to elements in this vector.
 	readfile(file, sites, bobs);
 
-	crudeTestAlgorithm(logfile, sites[0].colors);
+	crudeTestAlgorithm(logfile, sites[0]);
 }
