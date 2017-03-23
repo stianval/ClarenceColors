@@ -395,6 +395,8 @@ struct DrawingContext {
 	}
 
 	void putColor(double red, double green, double blue) {
+		if (cursX < 0 || nCellsW <= cursX) return;
+		if (cursY < 0 || nCellsH <= cursY) return;
 		png_color color;
 		color.red = min(255, static_cast<int>(red));
 		color.green = min(255, static_cast<int>(green));
